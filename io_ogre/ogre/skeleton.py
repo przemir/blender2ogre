@@ -24,6 +24,8 @@ def dot_skeleton(obj, path, **kwargs):
     if arm and config.get('ARM_ANIM'):
         skel = Skeleton( obj )
         name = kwargs.get('force_name') or obj.data.name
+        if config.get('NAME_FROM_SKELETON'):
+          name = arm.name
         name = util.clean_object_name(name)
         xmlfile = join(path, '%s.skeleton.xml' % name)
         with open(xmlfile, 'wb') as fd:
@@ -414,6 +416,9 @@ class Skeleton(object):
             axis.setAttribute('z', '%6f' %z )
 
             # Ogre bones do not have initial scaling
+
+        if config.get('SKELETON_ONLY'):
+          return doc.toprettyxml()
 
         arm = self.arm
         # remember some things so we can put them back later

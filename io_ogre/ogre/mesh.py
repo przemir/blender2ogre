@@ -62,6 +62,7 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
     obj_name = force_name or ob.data.name
     obj_name = clean_object_name(obj_name)
     target_file = os.path.join(path, '%s.mesh.xml' % obj_name )
+    skeleton_name = None
 
     material_prefix = kwargs.get('material_prefix', '')
     overwrite = kwargs.get('overwrite', False)
@@ -91,6 +92,8 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
         rem = []
         for mod in copy.modifiers:        # remove armature and array modifiers before collaspe
             if mod.type in 'ARMATURE ARRAY'.split(): rem.append( mod )
+            if mod.type == 'ARMATURE':
+                skeleton_name = mod.object.name
         for mod in rem: copy.modifiers.remove( mod )
         # bake mesh
         mesh = copy.to_mesh()    # collaspe
@@ -99,6 +102,9 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
     else:
         copy = ob
         mesh = ob.data
+
+    if skeleton_name == None:
+        skeleton_name = name
 
     if logging:
         print('      - Generating:', '%s.mesh.xml' % obj_name)
@@ -499,7 +505,7 @@ def dot_mesh( ob, path, force_name=None, ignore_shape_animation=False, normals=T
         arm = ob.find_armature()
         if arm:
             doc.leaf_tag('skeletonlink', {
-                    'name' : '%s.skeleton' % obj_name
+                    'name' : '%s.skeleton' % skeleton_name
             })
             doc.start_tag('boneassignments', {})
             boneOutputEnableFromName = {}

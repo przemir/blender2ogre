@@ -35,6 +35,8 @@ _CONFIG_DEFAULTS_ALL = {
     'OGRE_INHERIT_SCALE' : False,
     'FORCE_IMAGE_FORMAT' : 'NONE',
     'TOUCH_TEXTURES' : True,
+    'SKELETON_ONLY' : False,
+    'NAME_FROM_SKELETON' : False,
     'ARM_ANIM' : True,
     'SHAPE_ANIM' : True,
     'SHAPE_NORMALS' : True,

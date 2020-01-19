@@ -199,6 +199,14 @@ class _OgreCommonExport_(object):
         name="Export Meshes (overwrite)",
         description="export meshes (overwrite existing files)",
         default=config.get('MESH_OVERWRITE'))
+    EX_SKELETON_ONLY = BoolProperty(
+        name="Skeleton only",
+        description="ignores armature animations, exports skeleton only - updates the .skeleton file; needs ARM_ANIM set to True",
+        default=config.get('SKELETON_ONLY'))
+    EX_NAME_FROM_SKELETON = BoolProperty(
+        name="Get name from skeleton",
+        description="File name for skeleton is from skeleton itself",
+        default=config.get('NAME_FROM_SKELETON'))
     EX_ARM_ANIM = BoolProperty(
         name="Armature Animation",
         description="export armature animations - updates the .skeleton file",
