@@ -98,7 +98,7 @@ class _OgreCommonExport_(object):
             "Materials" : ["EX_MATERIALS", "EX_SEPARATE_MATERIALS", "EX_COPY_SHADER_PROGRAMS", "EX_USE_FFP_PARAMETERS"],
             "Textures" : ["EX_DDS_MIPS", "EX_FORCE_IMAGE_FORMAT"],
             "Armature" : ["EX_ARMATURE_ANIMATION", "EX_SHARED_ARMATURE", "EX_ONLY_KEYFRAMES", "EX_ONLY_DEFORMABLE_BONES", "EX_ONLY_KEYFRAMED_BONES", "EX_OGRE_INHERIT_SCALE", "EX_TRIM_BONE_WEIGHTS"],
-            "Mesh" : ["EX_MESH", "EX_MESH_OVERWRITE", "EX_ARRAY", "EX_V1_EXTREMITY_POINTS", "EX_Vx_GENERATE_EDGE_LISTS", "EX_GENERATE_TANGENTS", "EX_Vx_PACK_INT_10_10_10_2", "EX_Vx_OPTIMISE_ANIMATIONS", "EX_Vx_OPTIMISE_VERTEX_CACHE", "EX_V2_OPTIMISE_VERTEX_BUFFERS", "EX_V2_OPTIMISE_VERTEX_BUFFERS_OPTIONS"],
+            "Mesh" : ["EX_MESH", "EX_MESH_OVERWRITE", "EX_ARRAY", "EX_V1_EXTREMITY_POINTS", "EX_Vx_GENERATE_EDGE_LISTS", "EX_GENERATE_TANGENTS", "EX_Vx_PACK_INT_10_10_10_2", "EX_Vx_OPTIMISE_ANIMATIONS", "EX_Vx_OPTIMISE_VERTEX_CACHE", "EX_V2_OPTIMISE_VERTEX_BUFFERS", "EX_V2_OPTIMISE_VERTEX_BUFFERS_OPTIONS", "EX_UNSHARE_GEOMETRY"],
             "LOD" : ["EX_LOD_GENERATION", "EX_LOD_LEVELS", "EX_LOD_DISTANCE", "EX_LOD_PERCENT"],
             "Shape Animation" : ["EX_SHAPE_ANIMATIONS", "EX_SHAPE_NORMALS"],
             "Logging" : ["EX_Vx_ENABLE_LOGGING", "EX_Vx_DEBUG_LOGGING"]
@@ -438,6 +438,10 @@ s - make shadow mapping passes have their own optimised buffers. Overrides exist
 S - strips the buffers for shadow mapping (consumes less space and memory)""",
         maxlen=5,
         default=config.get('OPTIMISE_VERTEX_BUFFERS_OPTIONS')) = {}
+    EX_UNSHARE_GEOMETRY : BoolProperty(
+        name="Unshare mesh geometry",
+        description="Group mesh geometry by submesh instead of in a large shared section.  Useful for instanced meshes so Ogre doesn't have to unshare them on every mesh reload.  Only supports skeletal animation.",
+        default=config.get('UNSHARE_GEOMETRY')) = {}
 
     # LOD
     EX_LOD_GENERATION : EnumProperty(

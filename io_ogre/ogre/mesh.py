@@ -10,6 +10,315 @@ from .skeleton import Skeleton
 
 logger = logging.getLogger('mesh')
 
+def hash_combine(x, y):
+    return x ^ y + 0x9e3779b9 + (x<<6) + (x>>2)
+
+class Vertex(object):
+    def __init__(self, x, y, z, nx, ny, nz, u, v, r, g, b, a, tx, ty, tz, tw, boneWeights, original):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.nx = nx
+        self.ny = ny
+        self.nz = nz
+        self.u = u
+        self.v = v
+        self.r = r
+        self.g = g
+        self.b = b
+        self.a = a
+        self.tx = tx
+        self.ty = ty
+        self.tz = tz
+        self.tw = tw
+        self.boneWeights = boneWeights
+        self.original = original
+
+    def __eq__(self, o):
+        if self.nx != o.nx or self.ny != o.ny or self.nz != o.nz: return False
+        elif self.x != o.x or self.y != o.y or self.z != o.z: return False
+        elif self.u != o.u or self.v != o.v: return False
+        elif self.r != o.r or self.g != o.g or self.b != o.b: return False
+        elif self.tx != o.tx or self.ty != o.ty or self.tz != o.tz or self.tw != o.tw: return False
+        return True
+
+    def __hash__(self):
+        result = hash(self.x)
+        result = hash_combine( result, hash(self.y) )
+        result = hash_combine( result, hash(self.z) )
+        result = hash_combine( result, hash(self.nx) )
+        result = hash_combine( result, hash(self.ny) )
+        result = hash_combine( result, hash(self.nz) )
+        result = hash_combine( result, hash(self.u) )
+        result = hash_combine( result, hash(self.v) )
+        result = hash_combine( result, hash(self.r) )
+        result = hash_combine( result, hash(self.g) )
+        result = hash_combine( result, hash(self.b) )
+        result = hash_combine( result, hash(self.tx) )
+        result = hash_combine( result, hash(self.ty) )
+        result = hash_combine( result, hash(self.tz) )
+        result = hash_combine( result, hash(self.tw) )
+        return result
+
+def write_submeshnames (doc, materials):
+    doc.start_tag('submeshnames', {})
+    for i, material in enumerate (materials):
+        doc.leaf_tag('submesh', {'name': material.name, 'index': i})
+    doc.end_tag('submeshnames')
+
+def write_skeletonlink (obj_name, arm, doc):
+    if arm is None:
+        return
+    skeleton_name = obj_name
+    if config.get('SHARED_ARMATURE') is True:
+        skeleton_name = arm.data.name
+    skeleton_name = util.clean_object_name(skeleton_name)
+    doc.leaf_tag('skeletonlink', { 'name' : '%s.skeleton' % skeleton_name })
+
+def calc_boneindex (arm):
+    if arm is None:
+        return {}
+    boneIndexFromName = {}
+    boneIndex = 0
+    for bone in arm.pose.bones:
+        boneIndexFromName[ bone.name ] = boneIndex
+        boneIndex += 1
+    return boneIndexFromName
+
+def calc_geometry (mesh, ob, materials, tangents, arm):
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.verts.ensure_lookup_table()
+
+    # Ogre only supports triangles
+    bmesh_return = bmesh.ops.triangulate(bm, faces=bm.faces, quad_method='FIXED')
+    bm.to_mesh(mesh)
+    bm.free()
+    del bm
+
+    if tangents != 0:
+        mesh.calc_tangents(uvmap=mesh.uv_layers.active.name)
+    else:
+        # calc_tangents() already calculates split normals for us
+        if bpy.app.version < (4, 1, 0):
+            mesh.calc_normals_split()
+
+    vertex_color_lookup = VertexColorLookup(mesh)
+    uvData = mesh.uv_layers.active.data if mesh.uv_layers.active else None
+
+    faces = {}
+    for material_index, material in enumerate(materials):
+        faces[material_index] = []
+    
+    vertexList = []
+    map = {}
+
+    boneindex = calc_boneindex (arm)
+    TRIM_BONE_WEIGHTS = config.get('TRIM_BONE_WEIGHTS')
+
+    import sys
+    progressScale = 1.0 / (len(mesh.polygons) - 1)
+    for fidx, face in enumerate(mesh.polygons):
+        tris = []
+        tris.append( (face.vertices[0], face.vertices[1], face.vertices[2]) )
+        if(len(face.vertices)>=4):
+            tris.append( (face.vertices[0], face.vertices[2], face.vertices[3]) )
+                    
+        # Progress
+        percent = fidx * progressScale
+        sys.stdout.write( "\rVertices [" + '=' * int(percent*50) + '>' + '.' * int(50-percent*50) + "] " + str(int(percent*10000)/100.0) + "%   ")
+        sys.stdout.flush()
+        
+        # should be triangles
+        if len(face.vertices) != 3:
+            raise ValueError('Polygon not a triangle')        
+
+        # Add triangle
+        newFace = []
+        for i in range(3):
+            vertex = face.vertices[i]
+            loop = face.loop_indices[i]
+            
+            x, y, z = swap (mesh.vertices[vertex].co)
+            
+            if bpy.app.version < (3, 6, 0):
+                nx,ny,nz = swap(mesh.loops[loop].normal)
+            else:
+                nx,ny,nz = swap(mesh.corner_normals[loop].vector)
+            u, v  = uvData[loop].uv if uvData else (0, 0)
+            r,g,b,ra = vertex_color_lookup.get(loop)
+            
+            if tangents != 0:
+                tx,ty,tz = swap(mesh.loops[loop].tangent)
+                tw = mesh.loops[loop].bitangent_sign
+            else:
+                tx = ty = tz = tw = 0
+            
+            #vertex groups
+            boneWeights = {}
+            for vGroup in mesh.vertices[vertex].groups:
+                if vGroup.weight > TRIM_BONE_WEIGHTS:
+                    vg = ob.vertex_groups[ vGroup.group ]
+                    if vg.name not in boneindex:
+                        continue
+                    bi = boneindex[vg.name]
+                    boneWeights[bi] = vGroup.weight
+            
+            # Add vertex
+            vert = Vertex(x, y, z, nx, ny, nz, u, v, r, g, b, ra, tx, ty, tz, tw, boneWeights, vertex)
+            nextIdx = map.get(vert)
+            if nextIdx == None:
+                nextIdx = len(vertexList)
+                vertexList.append(vert)
+                map[vert] = nextIdx
+            newFace.append(nextIdx)        
+        faces[face.material_index].append (newFace)
+
+    # geometry
+    geometry = {}
+    boneAssignments = []
+
+    for vert in vertexList:
+        boneWeights = []
+        for bi in vert.boneWeights.keys():
+            boneWeights.append([bi, vert.boneWeights[bi]])
+        boneAssignments.append(boneWeights)
+    
+    geometry['boneassignments'] = boneAssignments
+    geometry['vertices'] = vertexList
+    geometry['faces'] = faces   
+    return geometry
+
+def calc_materials (ob):
+    materials = []
+    for material in ob.data.materials:
+        materials.append (material)
+    return materials
+
+def calc_submeshes (geometry, materials):    
+    submeshes = {}
+    assert len (materials) == len (geometry['faces'])
+    for material_index, submesh in geometry['faces'].items ():
+        next_idx = 0
+        remap = {}
+        unmap = {}
+        for face in submesh:
+            for v in face:
+                if v in remap:
+                    continue
+                remap[v] = next_idx
+                unmap[next_idx] = v
+                next_idx += 1
+        submeshes[material_index] = [remap, unmap]
+    assert len (submeshes) == len (materials)
+    return submeshes
+
+def write_unshared (target_file, path, dotextures, mesh, normals, tangents, ob, obj_name):
+
+    logger.info('* Writing unshared geometry')
+
+    if config.get ('ARMATURE_ANIMATION') is True:
+        arm = ob.find_armature()
+    else:
+        arm = None
+
+    vertex_color_lookup = VertexColorLookup(mesh)
+    materials = calc_materials (ob)
+    geometry = calc_geometry (mesh, ob, materials, tangents, arm)
+    submeshes = calc_submeshes (geometry, materials)
+    
+    faces = geometry['faces']
+    vertices = geometry['vertices']
+    boneassignments = geometry['boneassignments']
+    assert len(vertices) == len(boneassignments)
+
+    with open(target_file, 'w') as f:
+        doc = SimpleSaxWriter(f, 'mesh', {})
+
+        doc.start_tag('submeshes', {})
+
+        for i, (remap, unmap) in submeshes.items ():
+            logger.info('* Writing submesh: ' + str(i))
+
+            face_count = len (faces[i])
+            Report.triangles += face_count
+            if face_count == 0:
+                Report.warnings.append('BAD SUBMESH "%s": material %r, has not been applied to any faces - not exporting as submesh.' % (obj_name, materials[i].name) )
+                continue # fixes corrupt unused materials
+
+            vertex_count = len (remap)
+            Report.vertices += vertex_count
+
+            submesh_attributes = {
+                'usesharedvertices' : 'false',
+                "use32bitindexes" : str(bool(vertex_count > 65535)),
+                "operationtype" : "triangle_list",
+                "material" : materials[i].name}
+            doc.start_tag('submesh', submesh_attributes)
+
+            doc.start_tag('faces', { 'count' : str(face_count)})
+            
+            for fi, (v1, v2, v3) in enumerate (faces[i]):
+                r1 = remap[v1]
+                r2 = remap[v2]
+                r3 = remap[v3]
+                doc.leaf_tag('face', { 'v1' : str(r1), 'v2' : str(r2), 'v3' : str(r3)})
+            doc.end_tag('faces')
+
+            doc.start_tag('geometry', {'vertexcount' : str(vertex_count)})
+
+            doc.start_tag('vertexbuffer', {
+                'positions':'true',
+                'normals':'true',
+                'tangents': str(bool(tangents)),
+                'tangent_dimensions': str(tangents),
+                'colours_diffuse' : str(bool( mesh.vertex_colors )),
+                'texture_coords' : '%s' % int (len (mesh.uv_layers))})
+
+            logger.info('* Writing submesh vertices: ' + str(i))
+            for r in range (vertex_count):
+                i = unmap[r]
+                assert i >= 0
+                assert i < len(vertices)
+                v = vertices[i]
+
+                doc.start_tag('vertex', {})
+                doc.leaf_tag('position', {'x' : '%6f' % v.x, 'y' : '%6f' % v.y,  'z' : '%6f' % v.z})
+                doc.leaf_tag('normal', {'x' : '%6f' % v.nx,  'y' : '%6f' % v.ny, 'z' : '%6f' % v.nz})
+                if tangents != 0:
+                    doc.leaf_tag('tangent', {'x' : '%6f' % v.tx, 'y' : '%6f' % v.ty, 'z' : '%6f' % v.tz, 'w' : '%6f' % v.tw})
+                if vertex_color_lookup.has_color_data:
+                    doc.leaf_tag('colour_diffuse', {'value' : '%6f %6f %6f %6f' % (v.r,v.g,v.b,v.ra)})
+                # Texture maps
+                if dotextures:
+                   doc.leaf_tag('texcoord', { 'u' : '%6f' % v.u, 'v' : '%6f' % (1.0-v.v) })
+                doc.end_tag('vertex')
+
+            doc.end_tag('vertexbuffer')
+            doc.end_tag('geometry')
+
+            if arm:
+                doc.start_tag('boneassignments', {})
+                for r in range (vertex_count):
+                    i = unmap[r]
+                    assert i >= 0
+                    assert i < len(boneassignments)
+                    vbas = boneassignments[i]
+                    for vba in vbas:
+                        doc.leaf_tag('vertexboneassignment', { 'vertexindex' : str(r), 'boneindex' : str(vba[0]), 'weight' : '%6f' % vba[1] })
+                doc.end_tag('boneassignments')  
+
+            doc.end_tag('submesh')
+        doc.end_tag('submeshes')
+
+        write_submeshnames (doc, materials)
+        write_skeletonlink (obj_name, arm, doc)
+
+        doc.close() # reported by Reyn
+        f.close ()
+    
+    return
+
 class VertexColorLookup:
     def __init__(self, mesh):
         self.__colors = None
@@ -59,92 +368,9 @@ class VertexColorLookup:
         else:
             color = [1.0] * 4
         return color
+    
 
-def dot_mesh(ob, path, force_name=None, ignore_shape_animation=False, normals=True, tangents=4, isLOD=False, **kwargs):
-    """
-    export the vertices of an object into a .mesh file
-
-    ob: the blender object
-    path: the path to save the .mesh file to. path MUST exist
-    force_name: force a different name for this .mesh
-    kwargs:
-      * material_prefix - string. (optional)
-      * overwrite - bool. (optional) default False
-    """
-    obj_name = force_name or ob.data.name
-    obj_name = clean_object_name(obj_name)
-    target_file = os.path.join(path, '%s.mesh.xml' % obj_name )
-
-    material_prefix = kwargs.get('material_prefix', '')
-    overwrite = kwargs.get('overwrite', False)
-
-    # Don't export hidden or unselected objects unless told to
-    if  not isLOD and (
-        (config.get('LOD_GENERATION') == '2' and "_LOD_" in ob.name) or
-        ((config.get("EXPORT_HIDDEN") is False) and ob not in bpy.context.visible_objects) or
-        ((config.get("SELECTED_ONLY") is True) and not ob.select_get())
-        ):
-        logger.debug("Skip exporting hidden/non-selected object: %s" % ob.data.name)
-        return []
-
-    if os.path.isfile(target_file) and not overwrite:
-        return []
-
-    if not os.path.isdir( path ):
-        os.makedirs( path )
-
-    start = time.time()
-
-    if ob.modifiers != None:
-        # Disable Armature and Array modifiers before `to_mesh()` collapse
-        # NOTE: We need to disable the modifiers on the original object itself, we'll enable them again later
-        # If we try to remove the unwanted modifiers from the copy object, then none of the modifiers will be applied when doing `to_mesh()`
-
-        # If we want to optimise array modifiers as instances, then the Array Modifier should be disabled
-        if config.get("ARRAY") is True:
-            disable_mods = ['ARMATURE', 'ARRAY']
-        else:
-            disable_mods = ['ARMATURE']
-
-        for mod in ob.modifiers:
-            if mod.type in disable_mods and mod.show_viewport is True:
-                logger.debug("Disabling Modifier: %s" % mod.name)
-                mod.show_viewport = False
-
-        # Without this, modifiers won't be applied by `to_mesh()`
-        depsgraph = bpy.context.evaluated_depsgraph_get()
-        object_eval = ob.evaluated_get(depsgraph)
-
-        copy = object_eval.copy()
-        #bpy.context.scene.collection.objects.link(copy)
-    else:
-        copy = ob
-
-    # bake mesh
-    mesh = copy.to_mesh()
-    mesh.update()
-
-    # Blender by default does not calculate these. 
-    # When querying the quads/tris of the object blender would crash if calc_tessface was not updated
-    mesh.calc_loop_triangles()
-
-    Report.meshes.append( obj_name )
-    Report.faces += len( mesh.loop_triangles )
-    Report.orig_vertices += len( mesh.vertices )
-
-    logger.info('* Generating: %s.mesh.xml' % obj_name)
-    logger.info("  - Vertices: %s" % len( mesh.vertices ))
-    logger.info("  - Loop triangles: %s" % len( mesh.loop_triangles ))
-
-    try:
-        with open(target_file, 'w') as f:
-            f.flush()
-    except Exception as e:
-        logger.error("Unable to create mesh file: %s" % target_file)
-        logger.error(e)
-        Report.errors.append("Unable to create mesh file: %s" % target_file)
-        return []
-
+def write_shared (target_file, path, dotextures, mesh, normals, tangents, material_prefix, ob, obj_name, copy, start, ignore_shape_animation, isLOD, disable_mods):
     with open(target_file, 'w') as f:
         doc = SimpleSaxWriter(f, 'mesh', {})
 
@@ -159,13 +385,6 @@ def dot_mesh(ob, path, force_name=None, ignore_shape_animation=False, normals=Tr
         if int(config.get("GENERATE_TANGENTS")) != 0 and len(mesh.uv_layers) == 0:
             logger.warning("No UV Maps were created for this object: <%s>, tangents won't be exported." % ob.name)
             Report.warnings.append( 'Object "%s" has no UV Maps, tangents won\'t be exported.' % ob.name )
-
-        # Textures
-        dotextures = False
-        if mesh.uv_layers:
-            dotextures = True
-        else:
-            tangents = 0
 
         doc.start_tag('vertexbuffer', {
                 'positions':'true',
@@ -800,22 +1019,6 @@ def dot_mesh(ob, path, force_name=None, ignore_shape_animation=False, normals=Tr
                 doc.end_tag('animations')
                 logger.info('- Done at %s seconds' % util.timer_diff_str(start))
 
-        ## If we made a copy of the object, clean it up
-        if ob != copy:
-            #bpy.context.collection.objects.unlink(copy)    # Blender 2.7x
-            #bpy.context.scene.collection.objects.unlink(copy)  # Blender 2.8+
-            copy.user_clear()
-            logger.debug("Removing temporary object: %s" % copy.name)
-            bpy.data.objects.remove(copy)
-            del copy
-
-        # Reenable disabled modifiers
-        if ob.modifiers != None:
-            for mod in ob.modifiers:
-                if mod.type in disable_mods and mod.show_viewport == False:
-                    logger.debug("Enabling Modifier: %s" % mod.name)
-                    mod.show_viewport = True
-
         # Release BMesh resources
         bm.free()
         del bm
@@ -824,20 +1027,134 @@ def dot_mesh(ob, path, force_name=None, ignore_shape_animation=False, normals=Tr
         del _face_indices_
         doc.close() # reported by Reyn
         f.close()
-
-        logger.info('- Created %s.mesh.xml at %s seconds' % (obj_name, util.timer_diff_str(start)))
-
-    # todo: Very ugly, find better way
-    def replaceInplace(f,searchExp,replaceExp):
-        import fileinput
         
-        with fileinput.FileInput(f, inplace=True, encoding="utf-8") as file:
-            for line in file:
-                if searchExp in line:
-                    line = line.replace(searchExp,replaceExp)
-                sys.stdout.write(line)
+        # todo: Very ugly, find better way
+        def replaceInplace(f,searchExp,replaceExp):
+            import fileinput
+            
+            with fileinput.FileInput(f, inplace=True, encoding="utf-8") as file:
+                for line in file:
+                    if searchExp in line:
+                        line = line.replace(searchExp,replaceExp)
+                    sys.stdout.write(line)
 
-    replaceInplace(target_file, '__TO_BE_REPLACED_VERTEX_COUNT__' + '"', str(numverts) + '"' )#+ ' ' * (ls - lr))
+        replaceInplace(target_file, '__TO_BE_REPLACED_VERTEX_COUNT__' + '"', str(numverts) + '"' )#+ ' ' * (ls - lr))
+
+def dot_mesh(ob, path, force_name=None, ignore_shape_animation=False, normals=True, tangents=4, isLOD=False, **kwargs):
+    """
+    export the vertices of an object into a .mesh file
+
+    ob: the blender object
+    path: the path to save the .mesh file to. path MUST exist
+    force_name: force a different name for this .mesh
+    kwargs:
+      * material_prefix - string. (optional)
+      * overwrite - bool. (optional) default False
+    """
+    obj_name = force_name or ob.data.name
+    obj_name = clean_object_name(obj_name)
+    target_file = os.path.join(path, '%s.mesh.xml' % obj_name )
+
+    material_prefix = kwargs.get('material_prefix', '')
+    overwrite = kwargs.get('overwrite', False)
+
+    # Don't export hidden or unselected objects unless told to
+    if  not isLOD and (
+        (config.get('LOD_GENERATION') == '2' and "_LOD_" in ob.name) or
+        ((config.get("EXPORT_HIDDEN") is False) and ob not in bpy.context.visible_objects) or
+        ((config.get("SELECTED_ONLY") is True) and not ob.select_get())
+        ):
+        logger.debug("Skip exporting hidden/non-selected object: %s" % ob.data.name)
+        return []
+
+    if os.path.isfile(target_file) and not overwrite:
+        return []
+
+    if not os.path.isdir( path ):
+        os.makedirs( path )
+
+    start = time.time()
+
+    if ob.modifiers != None:
+        # Disable Armature and Array modifiers before `to_mesh()` collapse
+        # NOTE: We need to disable the modifiers on the original object itself, we'll enable them again later
+        # If we try to remove the unwanted modifiers from the copy object, then none of the modifiers will be applied when doing `to_mesh()`
+
+        # If we want to optimise array modifiers as instances, then the Array Modifier should be disabled
+        if config.get("ARRAY") is True:
+            disable_mods = ['ARMATURE', 'ARRAY']
+        else:
+            disable_mods = ['ARMATURE']
+
+        for mod in ob.modifiers:
+            if mod.type in disable_mods and mod.show_viewport is True:
+                logger.debug("Disabling Modifier: %s" % mod.name)
+                mod.show_viewport = False
+
+        # Without this, modifiers won't be applied by `to_mesh()`
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        object_eval = ob.evaluated_get(depsgraph)
+
+        copy = object_eval.copy()
+        #bpy.context.scene.collection.objects.link(copy)
+    else:
+        copy = ob
+
+    # bake mesh
+    mesh = copy.to_mesh()
+    mesh.update()
+
+    # Blender by default does not calculate these. 
+    # When querying the quads/tris of the object blender would crash if calc_tessface was not updated
+    mesh.calc_loop_triangles()
+
+    Report.meshes.append( obj_name )
+    Report.faces += len( mesh.loop_triangles )
+    Report.orig_vertices += len( mesh.vertices )
+
+    logger.info('* Generating: %s.mesh.xml' % obj_name)
+    logger.info("  - Vertices: %s" % len( mesh.vertices ))
+    logger.info("  - Loop triangles: %s" % len( mesh.loop_triangles ))
+
+    try:
+        with open(target_file, 'w') as f:
+            f.flush()
+    except Exception as e:
+        logger.error("Unable to create mesh file: %s" % target_file)
+        logger.error(e)
+        Report.errors.append("Unable to create mesh file: %s" % target_file)
+        return []
+
+    # Textures
+    dotextures = False
+    if mesh.uv_layers:
+        dotextures = True
+    else:
+        tangents = 0
+
+    unshare_geometry = config.get ('UNSHARE_GEOMETRY')
+    if unshare_geometry:
+        write_unshared (target_file, path, dotextures, mesh, normals, tangents, ob, obj_name)
+    else:
+        write_shared (target_file, path, dotextures, mesh, normals, tangents, material_prefix, ob, obj_name, copy, start, ignore_shape_animation, isLOD, disable_mods)
+
+    ## If we made a copy of the object, clean it up
+    if ob != copy:
+        #bpy.context.collection.objects.unlink(copy)    # Blender 2.7x
+        #bpy.context.scene.collection.objects.unlink(copy)  # Blender 2.8+
+        copy.user_clear()
+        logger.debug("Removing temporary object: %s" % copy.name)
+        bpy.data.objects.remove(copy)
+        del copy
+
+    # Reenable disabled modifiers
+    if ob.modifiers != None:
+        for mod in ob.modifiers:
+            if mod.type in disable_mods and mod.show_viewport == False:
+                logger.debug("Enabling Modifier: %s" % mod.name)
+                mod.show_viewport = True
+
+    logger.info('- Created %s.mesh.xml at %s seconds' % (obj_name, util.timer_diff_str(start)))
 
     # Start .mesh.xml to .mesh convertion tool
     util.xml_convert(target_file, has_uvs=dotextures)
@@ -854,16 +1171,6 @@ def dot_mesh(ob, path, force_name=None, ignore_shape_animation=False, normals=Tr
 
     # Note that exporting the skeleton does not happen here anymore
     # It was moved to the function dot_skeleton in its own module (skeleton.py)
-
-    mats = []
-    for mat_name, extern, mat in materials:
-        # _missing_material_ is marked as extern
-        if not extern:
-            mats.append(mat_name)
-        else:
-            logger.info("Extern material: %s" % mat_name)
-
-    return mats
 
 def triangle_list_in_group(mesh, shared_vertices, group_index):
     faces = []
